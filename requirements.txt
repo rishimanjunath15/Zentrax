@@ -1,0 +1,19 @@
+# Speech Recognition
+openai-whisper
+SpeechRecognition
+pyaudio
+
+# Deep Learning
+torch
+torchaudio
+
+# Computer Vision
+opencv-python
+mediapipe
+
+# Automation
+pyautogui
+pywhatkit
+
+# Utilities
+numpy

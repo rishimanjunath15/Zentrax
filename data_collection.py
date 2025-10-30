@@ -5,9 +5,10 @@ import os
 import time
 import json
 import speech_recognition as sr
+from whisper_handler import HybridRecognizer
 
 class DataCollector:
-    def __init__(self):
+    def __init__(self, use_whisper=True):
         # Create directories for data storage
         self.base_dir = "training_data"
         self.gesture_dir = os.path.join(self.base_dir, "gestures")
@@ -26,8 +27,14 @@ class DataCollector:
         )
         self.mp_drawing = mp.solutions.drawing_utils
         
-        # Initialize speech recognition
-        self.recognizer = sr.Recognizer()
+        # Initialize speech recognition with Whisper support
+        self.use_whisper = use_whisper
+        if use_whisper:
+            self.hybrid_recognizer = HybridRecognizer(use_whisper=True, whisper_model="base")
+            self.recognizer = self.hybrid_recognizer.recognizer
+        else:
+            self.recognizer = sr.Recognizer()
+            self.hybrid_recognizer = None
         self.microphone = sr.Microphone()
         
         # Define gestures to collect
@@ -178,9 +185,12 @@ class DataCollector:
                     with open(audio_file, "wb") as f:
                         f.write(audio.get_wav_data())
                     
-                    # Try to recognize and verify
+                    # Try to recognize and verify using Whisper or Google
                     try:
-                        text = self.recognizer.recognize_google(audio).lower()
+                        if self.use_whisper and self.hybrid_recognizer:
+                            text = self.hybrid_recognizer.recognize(audio).lower()
+                        else:
+                            text = self.recognizer.recognize_google(audio).lower()
                         print(f"Recognized: {text}")
                         
                         # Store the recognized text
