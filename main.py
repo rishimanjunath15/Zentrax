@@ -7,11 +7,51 @@ import threading
 import time
 import os
 import sys
-import traceback
 import pywhatkit
 from datetime import datetime
-from hill_climb_game import HillClimbGame
-from whisper_handler import HybridRecognizer
+from queue import Queue, Empty
+
+# Optional non-PyAudio audio capture fallback
+try:
+    import sounddevice as _sd  # used only if PyAudio/sr.Microphone fails
+    SOUNDDEVICE_AVAILABLE = True
+except Exception:
+    _sd = None
+    SOUNDDEVICE_AVAILABLE = False
+
+# --- Safe imports / fallbacks for missing modules ---
+try:
+	# try to import real implementations if present
+	from hill_climb_game import HillClimbGame
+except Exception:
+	# Minimal stub so main program can run without the actual game module
+	class HillClimbGame:
+		def __init__(self):
+			self.running = False
+		def run(self):
+			# simple loop placeholder (non-blocking use expected in main)
+			self.running = True
+			while self.running:
+				time.sleep(0.1)
+		def handle_gesture(self, gesture):
+			print(f"[HillClimbGame stub] Gesture received: {gesture}")
+
+try:
+	from whisper_handler import HybridRecognizer
+except Exception:
+	# Fallback HybridRecognizer using speech_recognition's Google API
+	class HybridRecognizer:
+		def __init__(self, use_whisper=False, whisper_model="base"):
+			import speech_recognition as sr
+			self.recognizer = sr.Recognizer()
+			self.use_whisper = False  # fallback doesn't use Whisper
+		def recognize(self, audio):
+			# audio: instance of speech_recognition.AudioData
+			try:
+				# Prefer the recognizer's built-in Google API as a lightweight fallback.
+				return self.recognizer.recognize_google(audio)
+			except Exception:
+				return ""
 
 
 class VoiceGestureControl:
@@ -20,7 +60,10 @@ class VoiceGestureControl:
         # Initialize Whisper-based hybrid recognizer
         self.hybrid_recognizer = HybridRecognizer(use_whisper=use_whisper, whisper_model=whisper_model)
         self.recognizer = self.hybrid_recognizer.recognizer
+
+        # detect microphone (may return None if PyAudio missing)
         self.mic_index = self.get_working_microphone()
+
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
@@ -35,6 +78,13 @@ class VoiceGestureControl:
         self.listening = True
         self.gesture_cooldown = 0
         self.game = None
+
+        # Add configurable wake phrase (change here if you want a different trigger)
+        self.wake_phrase = "hello"
+
+        # audio queue for non-blocking transcription
+        self.audio_queue = Queue()
+        self.audio_worker = threading.Thread(target=self._audio_worker, daemon=True)
 
         # Voice commands
         self.voice_commands = {
@@ -68,82 +118,152 @@ class VoiceGestureControl:
 
     # ---------------- Microphone Handling ----------------
     def get_working_microphone(self):
-        mic_list = sr.Microphone.list_microphone_names()
-        preferred_keywords = ["microphone", "realtek", "amd", "mic", "audio"]
+        try:
+            mic_list = sr.Microphone.list_microphone_names()
+        except (AttributeError, ModuleNotFoundError, OSError) as e:
+            # PyAudio missing -> speech_recognition cannot list devices here.
+            # Don't force a hard "NO_MIC" exit; return None to attempt default mic usage
+            print("PyAudio is not installed or not available. Voice input may still work via system default or a fallback recorder.")
+            print("Install on Windows (recommended):")
+            print("  python -m pip install pipwin")
+            print("  python -m pipwin install pyaudio")
+            print("Or download a prebuilt wheel from:")
+            print("  https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio")
+            return None
+
+        if not mic_list:
+            print("No audio devices found.")
+            return None
+
+        # Prefer explicit matches; otherwise use default microphone
+        preferred_keywords = ["microphone", "realtek", "amd", "mic", "audio", "internal", "default"]
 
         for i, name in enumerate(mic_list):
             if any(k in name.lower() for k in preferred_keywords):
                 try:
                     with sr.Microphone(device_index=i) as test_source:
-                        if test_source.stream is not None:
+                        if getattr(test_source, "stream", None) is not None:
                             print(f"✅ Using microphone {i}: {name}")
                             return i
-                except:
+                except Exception:
                     continue
-        # Fallback
+
+        # If no preferred device found, try to verify any device works and return its index
         for i, name in enumerate(mic_list):
             try:
                 with sr.Microphone(device_index=i) as test_source:
-                    if test_source.stream is not None:
+                    if getattr(test_source, "stream", None) is not None:
                         print(f"✅ Using fallback mic {i}: {name}")
                         return i
-            except:
+            except Exception:
                 continue
-        print("No working microphone found!")
-        sys.exit(1)
+
+        # As a last resort, use system default microphone (None)
+        print("No specific microphone validated; using system default microphone.")
+        return None
+
+    # ---------------- Audio worker (non-blocking) ----------------
+    def _audio_worker(self):
+        while self.running:
+            try:
+                audio = self.audio_queue.get(timeout=0.5)
+            except Empty:
+                continue
+            try:
+                text = self.hybrid_recognizer.recognize(audio) or ""
+                if text:
+                    self._handle_recognized_text(text.lower())
+            except Exception as e:
+                print(f"[Audio worker error]: {e}")
 
     # ---------------- Voice Control ----------------
     def listen_for_commands(self):
         print("Voice recognition started...")
+
+        # If PyAudio truly absent we still try default path and fallback recorder.
+        # Pre-adjust ambient noise once (use default mic when mic_index is None)
+        try:
+            if self.mic_index is None:
+                try:
+                    with sr.Microphone() as source:
+                        self.recognizer.adjust_for_ambient_noise(source, duration=0.8)
+                except Exception:
+                    # If sr.Microphone isn't usable (PyAudio missing), skip ambient adjust and continue:
+                    print("sr.Microphone unavailable; will try alternative recorder if needed.")
+            else:
+                with sr.Microphone(device_index=self.mic_index) as source:
+                    self.recognizer.adjust_for_ambient_noise(source, duration=0.8)
+        except Exception:
+            pass
+
+        self.audio_worker.start()
+
         while self.running and self.listening:
             try:
-                with sr.Microphone(device_index=self.mic_index) as source:
-                    self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                    audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=5)
+                audio = None
                 try:
-                    # Use Whisper hybrid recognizer for better accuracy
-                    text = self.hybrid_recognizer.recognize(audio).lower()
-                    if not text:
-                        continue
-                    print(f"Recognized: {text}")
-
-                    # Wake word
-                    if not self.is_awake:
-                        if "hello zentrax" in text:
-                            self.is_awake = True
-                            print("Zentrax is awake!")
-                        continue
-
-                    # Sleep or switch modes
-                    if "go to sleep" in text or "deactivate" in text:
-                        self.is_awake = False
-                        continue
-                    if "switch to gesture mode" in text:
-                        self.active_mode = "gesture"
-                        continue
-                    if "switch to voice mode" in text:
-                        self.active_mode = "voice"
-                        continue
-
-                    # Voice commands
-                    if self.active_mode == "voice":
-                        if text.startswith("play music"):
-                            song = text.replace("play music", "").strip()
-                            if song: self.play_music(song)
+                    if self.mic_index is None:
+                        # Try default sr.Microphone
+                        with sr.Microphone() as source:
+                            audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=5)
+                    else:
+                        with sr.Microphone(device_index=self.mic_index) as source:
+                            audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=5)
+                except Exception as e:
+                    # sr.Microphone failed (likely PyAudio missing). Try sounddevice fallback.
+                    if SOUNDDEVICE_AVAILABLE:
+                        print("sr.Microphone unavailable; using sounddevice fallback to capture audio.")
+                        audio = self.record_with_sounddevice(duration=5, fs=16000)
+                        if audio is None:
+                            print("Fallback recorder failed; waiting before retrying.")
+                            time.sleep(1)
                             continue
-                        elif text.startswith("send whatsapp message to"):
-                            self.handle_whatsapp(text)
-                            continue
-                        for command, func in self.voice_commands.items():
-                            if command in text:
-                                func()
-                                break
+                    else:
+                        print(f"Voice input unavailable: {e}")
+                        # wait and retry instead of exiting the loop
+                        time.sleep(1)
+                        continue
 
-                except sr.UnknownValueError:
-                    pass
+                # enqueue for background processing
+                if audio:
+                    self.audio_queue.put(audio)
+            except sr.WaitTimeoutError:
+                continue
             except Exception as e:
                 print(f"[Voice Error]: {e}")
                 time.sleep(1)
+
+    def _handle_recognized_text(self, text):
+        print(f"Recognized: {text}")
+        if not self.is_awake:
+            # use configurable wake phrase
+            if self.wake_phrase in text:
+                self.is_awake = True
+                print("Zentrax is awake!")
+            return
+
+        if "go to sleep" in text or "deactivate" in text:
+            self.is_awake = False
+            return
+        if "switch to gesture mode" in text:
+            self.active_mode = "gesture"
+            return
+        if "switch to voice mode" in text:
+            self.active_mode = "voice"
+            return
+
+        if self.active_mode == "voice":
+            if text.startswith("play music"):
+                song = text.replace("play music", "").strip()
+                if song: self.play_music(song)
+                return
+            elif text.startswith("send whatsapp message to"):
+                self.handle_whatsapp(text)
+                return
+            for command, func in self.voice_commands.items():
+                if command in text:
+                    func()
+                    break
 
     # ---------------- WhatsApp ----------------
     def handle_whatsapp(self, text):
@@ -164,12 +284,16 @@ class VoiceGestureControl:
         print("Gesture recognition started...")
         cap = cv2.VideoCapture(0)
         if not cap.isOpened(): return
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
         try:
             while self.running:
-                success, image = cap.read()
-                if not success: break
-                image = cv2.flip(image, 1)
+                ret, frame = cap.read()
+                if not ret:
+                    time.sleep(0.05)
+                    continue
+                image = cv2.flip(frame, 1)
                 image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                 results = self.hands.process(image_rgb)
 
@@ -182,7 +306,7 @@ class VoiceGestureControl:
                             self.gesture_cooldown = time.time() + 0.2  # faster for real-time
 
                 cv2.imshow('Hand Tracking', image)
-                if cv2.waitKey(5) & 0xFF == ord('q'):
+                if cv2.waitKey(1) & 0xFF == ord('q'):
                     self.running = False
                     break
         finally:
@@ -207,7 +331,7 @@ class VoiceGestureControl:
 
     # ---------------- Execute Gestures ----------------
     def execute_gesture(self, gesture):
-        if self.game and self.game.running:
+        if self.game and getattr(self.game, "running", False):
             self.game.handle_gesture(gesture)
             print(f"[Game] Gesture: {gesture}")
             return
@@ -235,6 +359,20 @@ class VoiceGestureControl:
         print(f"Saved screenshot: {path}")
     def exit_program(self): self.running = False
     def play_music(self, name): pywhatkit.playonyt(name)
+
+    def record_with_sounddevice(self, duration=5, fs=16000):
+        """Fallback recorder using sounddevice -> returns sr.AudioData or None."""
+        if not SOUNDDEVICE_AVAILABLE:
+            return None
+        try:
+            # record mono int16
+            audio = _sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='int16')
+            _sd.wait()
+            audio_bytes = audio.tobytes()
+            return sr.AudioData(audio_bytes, fs, 2)
+        except Exception as e:
+            print(f"[sounddevice fallback error]: {e}")
+            return None
 
     # ---------------- Main Run ----------------
     def run(self):
