@@ -28,13 +28,17 @@ if %ERRORLEVEL% neq 0 (
 echo Docker is ready!
 echo.
 
+REM Get project root
+cd /d "%~dp0\.."
+set "PROJECT_ROOT=%cd%"
+
 REM Start Ollama container
 echo Starting Ollama container...
 echo This will download the Ollama image and SmolLM2 model.
 echo First run may take 5-10 minutes depending on your internet speed.
 echo.
 
-docker-compose up -d ollama
+docker-compose -f "%PROJECT_ROOT%\docker\docker-compose.yml" up -d ollama
 
 echo.
 echo Waiting for Ollama to initialize...
@@ -55,9 +59,9 @@ echo.
 echo To test: curl http://localhost:11434/api/tags
 echo.
 echo Commands:
-echo   Stop:    docker-compose stop ollama
-echo   Start:   docker-compose start ollama
-echo   Logs:    docker-compose logs ollama
-echo   Remove:  docker-compose down
+echo   Stop:    docker-compose -f docker\docker-compose.yml stop ollama
+echo   Start:   docker-compose -f docker\docker-compose.yml start ollama
+echo   Logs:    docker-compose -f docker\docker-compose.yml logs ollama
+echo   Remove:  docker-compose -f docker\docker-compose.yml down
 echo.
 pause

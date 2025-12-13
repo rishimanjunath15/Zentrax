@@ -31,16 +31,19 @@ try {
 
 Write-Host ""
 
+# Get project root (parent of scripts folder)
+$projectRoot = Split-Path $PSScriptRoot -Parent
+
 # Start the WebSocket server in a new window
 Write-Host "[2/3] Starting WebSocket server..." -ForegroundColor Yellow
-$serverPath = Join-Path $PSScriptRoot "websocket_server.py"
+$serverPath = Join-Path $projectRoot "src\core\websocket_server.py"
 
 if (Test-Path $serverPath) {
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PSScriptRoot'; python websocket_server.py"
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$projectRoot'; python '$serverPath'"
     Write-Host "✓ WebSocket server started in new window" -ForegroundColor Green
     Start-Sleep -Seconds 2
 } else {
-    Write-Host "✗ websocket_server.py not found!" -ForegroundColor Red
+    Write-Host "✗ websocket_server.py not found at $serverPath!" -ForegroundColor Red
     pause
     exit 1
 }
@@ -49,13 +52,13 @@ Write-Host ""
 
 # Open the web interface
 Write-Host "[3/3] Opening web interface..." -ForegroundColor Yellow
-$htmlPath = Join-Path $PSScriptRoot "frontend\index.html"
+$htmlPath = Join-Path $projectRoot "frontend\index.html"
 
 if (Test-Path $htmlPath) {
     Start-Process $htmlPath
     Write-Host "✓ Web interface opened in browser" -ForegroundColor Green
 } else {
-    Write-Host "✗ frontend\index.html not found!" -ForegroundColor Red
+    Write-Host "✗ frontend\index.html not found at $htmlPath!" -ForegroundColor Red
     pause
     exit 1
 }

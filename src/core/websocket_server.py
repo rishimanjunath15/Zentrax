@@ -10,15 +10,16 @@ import threading
 import sys
 import os
 
-# Add parent directory to path to import main
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add project root to path to import main
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, PROJECT_ROOT)
 
 try:
     from main import VoiceGestureControl
-except ImportError:
-    print("Error: Could not import VoiceGestureControl from main.py")
-    print("Make sure main.py is in the parent directory")
-    sys.exit(1)
+except ImportError as e:
+    print(f"Warning: Could not import VoiceGestureControl from main.py: {e}")
+    print("WebSocket server will run in standalone mode")
+    VoiceGestureControl = None
 
 
 class ZentraxWebSocketServer:

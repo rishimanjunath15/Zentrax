@@ -18,6 +18,7 @@ whisper_datas, whisper_binaries, whisper_hiddenimports = collect_all('whisper')
 added_datas = [
     ('training_data', 'training_data'),
     ('frontend', 'frontend'),
+    ('src', 'src'),
 ]
 
 # Combine all data files
