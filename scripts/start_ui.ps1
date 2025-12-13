@@ -12,16 +12,19 @@ try {
     python -c "import websockets" 2>$null
     if ($LASTEXITCODE -eq 0) {
         Write-Host "✓ websockets installed" -ForegroundColor Green
-    } else {
+    }
+    else {
         throw "websockets not found"
     }
-} catch {
+}
+catch {
     Write-Host "✗ websockets not installed" -ForegroundColor Red
     Write-Host "Installing websockets..." -ForegroundColor Yellow
     pip install websockets
     if ($LASTEXITCODE -eq 0) {
         Write-Host "✓ websockets installed successfully" -ForegroundColor Green
-    } else {
+    }
+    else {
         Write-Host "✗ Failed to install websockets" -ForegroundColor Red
         Write-Host "Please run: pip install websockets" -ForegroundColor Yellow
         pause
@@ -42,7 +45,8 @@ if (Test-Path $serverPath) {
     Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$projectRoot'; python '$serverPath'"
     Write-Host "✓ WebSocket server started in new window" -ForegroundColor Green
     Start-Sleep -Seconds 2
-} else {
+}
+else {
     Write-Host "✗ websocket_server.py not found at $serverPath!" -ForegroundColor Red
     pause
     exit 1
@@ -57,7 +61,8 @@ $htmlPath = Join-Path $projectRoot "frontend\index.html"
 if (Test-Path $htmlPath) {
     Start-Process $htmlPath
     Write-Host "✓ Web interface opened in browser" -ForegroundColor Green
-} else {
+}
+else {
     Write-Host "✗ frontend\index.html not found at $htmlPath!" -ForegroundColor Red
     pause
     exit 1

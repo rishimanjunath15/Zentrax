@@ -182,6 +182,16 @@ class ZentraxWebSocketServer:
                     'message': 'Zentrax stopped',
                     'level': 'info'
                 })
+        
+        elif command == 'execute':
+            # Execute a voice command from UI
+            cmd = params.get('command', '')
+            if cmd and self.controller:
+                await self.broadcast({
+                    'type': 'log',
+                    'message': f'Executing: {cmd}',
+                    'category': 'system'
+                })
                 
     def start_controller(self):
         """Start the VoiceGestureControl in a separate thread"""
@@ -194,11 +204,43 @@ class ZentraxWebSocketServer:
             )
             self.controller_thread.start()
             print("VoiceGestureControl started")
+    
+    async def send_system_info(self):
+        """Send system info to all connected clients periodically."""
+        try:
+            import psutil
+            
+            # Get system stats
+            battery = psutil.sensors_battery()
+            battery_percent = battery.percent if battery else 100
+            
+            cpu_percent = psutil.cpu_percent(interval=0.1)
+            ram = psutil.virtual_memory()
+            disk = psutil.disk_usage('/')
+            
+            await self.broadcast({
+                'type': 'system_info',
+                'battery': battery_percent,
+                'cpu': cpu_percent,
+                'ram': ram.percent,
+                'disk': disk.percent
+            })
+        except Exception:
+            pass  # psutil not available
+    
+    async def system_info_loop(self):
+        """Background task to send system info every 5 seconds."""
+        while True:
+            await self.send_system_info()
+            await asyncio.sleep(5)
             
     async def start(self):
         """Start the WebSocket server"""
         print(f"Starting Zentrax WebSocket Server on {self.host}:{self.port}")
         print("Open frontend/index.html in your browser to access the UI")
+        
+        # Start system info broadcast task
+        asyncio.create_task(self.system_info_loop())
         
         async with websockets.serve(self.handle_client, self.host, self.port):
             await asyncio.Future()  # Run forever

@@ -426,9 +426,15 @@ window.addEventListener('load', () => {
     updateClock();
     setInterval(updateClock, 1000);
 
-    // Simulate system info (remove when backend provides this)
-    simulateSystemInfo();
-    setInterval(simulateSystemInfo, 5000);
+    // System info will come from backend via WebSocket
+    // Fallback to simulation if not connected after 3 seconds
+    setTimeout(() => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            console.log('Backend not connected, using simulated system info');
+            simulateSystemInfo();
+            setInterval(simulateSystemInfo, 5000);
+        }
+    }, 3000);
 
     // Show startup message
     addToHistory('system', 'Zentrax UI initialized');
