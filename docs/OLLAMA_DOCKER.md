@@ -1,4 +1,4 @@
-# Ollama Docker Setup for Zentrax
+# 🐳 Ollama Docker Setup for Zentrax
 
 This guide explains how to run Ollama (SmolLM2 model) in a Docker container for Zentrax.
 
@@ -6,117 +6,243 @@ This guide explains how to run Ollama (SmolLM2 model) in a Docker container for 
 
 1. **Docker Desktop** - Download from [docker.com](https://www.docker.com/products/docker-desktop/)
 2. **WSL 2** (Windows) - Docker Desktop will prompt you to install if needed
+3. **NVIDIA GPU** (Optional) - For GPU acceleration
 
-## Quick Start
+---
 
-### Option 1: One-Click Setup (Windows)
+## 🚀 Quick Start - One Command!
+
+### Windows Batch (Simplest)
 ```batch
-setup_ollama_docker.bat
+docker\start.bat
 ```
 
-### Option 2: Manual Setup
-```bash
-# Start Ollama container
-docker-compose up -d ollama
-
-# Wait for startup, then pull model
-docker exec zentrax-ollama ollama pull smollm2
+### PowerShell (with Options)
+```powershell
+.\docker\start.ps1
 ```
 
-## Docker Compose Commands
+That's it! The launcher will:
+1. ✅ Check if Docker is running
+2. ✅ Auto-detect NVIDIA GPU
+3. ✅ Start Ollama container
+4. ✅ Download SmolLM2 model
+5. ✅ Show status when ready
+
+---
+
+## 📋 Docker Commands
+
+### PowerShell Launcher Options
+
+```powershell
+.\docker\start.ps1              # Start with auto GPU detection
+.\docker\start.ps1 -CPU         # Force CPU mode (no GPU)
+.\docker\start.ps1 -Stop        # Stop all containers
+.\docker\start.ps1 -Logs        # View container logs
+.\docker\start.ps1 -Shell       # Open shell inside container
+```
+
+### Manual Docker Commands
 
 | Command | Description |
 |---------|-------------|
-| `docker-compose up -d ollama` | Start Ollama in background |
-| `docker-compose stop ollama` | Stop Ollama |
-| `docker-compose start ollama` | Restart stopped Ollama |
-| `docker-compose down` | Remove container |
-| `docker-compose logs ollama` | View logs |
+| `docker-compose -f docker/docker-compose.yml up -d` | Start with GPU |
+| `docker-compose -f docker/docker-compose.cpu.yml up -d` | Start CPU-only |
+| `docker-compose -f docker/docker-compose.yml down` | Stop containers |
+| `docker logs zentrax-ollama` | View logs |
+| `docker exec -it zentrax-ollama bash` | Open container shell |
 
-## Verify Ollama is Running
+---
 
-```bash
-# Check if Ollama is responding
+## 🔍 Verify Ollama is Running
+
+### Check API
+```powershell
+# Test if Ollama is responding
+Invoke-RestMethod http://localhost:11434/api/tags
+
+# Or using curl
 curl http://localhost:11434/api/tags
-
-# Test generation
-curl http://localhost:11434/api/generate -d '{
-  "model": "smollm2",
-  "prompt": "Hello!"
-}'
 ```
 
-## GPU Support (NVIDIA)
+### Test Generation
+```powershell
+$body = @{
+    model = "smollm2"
+    prompt = "Hello, how are you?"
+} | ConvertTo-Json
 
-The `docker-compose.yml` includes NVIDIA GPU support. If you have an NVIDIA GPU:
-
-1. Install [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-2. The container will automatically use your GPU
-
-**No GPU?** Edit `docker-compose.yml` and remove the `deploy.resources` section.
-
-## Connecting Zentrax to Containerized Ollama
-
-Zentrax automatically connects to Ollama at `http://localhost:11434`. No configuration needed!
-
-If Ollama is on a different host:
-```python
-# In windows_command_generator.py
-OLLAMA_URL = "http://your-host:11434/api/generate"
+Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -Body $body -ContentType "application/json"
 ```
 
-## Available Models
+---
 
-You can use other models instead of SmolLM2:
+## 🎮 GPU vs CPU
 
-```bash
-# Pull a different model
-docker exec zentrax-ollama ollama pull llama2
+### GPU Mode (Faster)
+The default `docker-compose.yml` includes NVIDIA GPU support:
+
+**Requirements:**
+- NVIDIA GPU with CUDA support
+- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+
+### CPU Mode (No GPU Required)
+Use `docker-compose.cpu.yml` for systems without NVIDIA GPU:
+
+```powershell
+# Automatic detection
+.\docker\start.ps1    # Auto-detects and uses CPU if no GPU
+
+# Force CPU mode
+.\docker\start.ps1 -CPU
+```
+
+---
+
+## 🔧 Configuration Files
+
+### docker/docker-compose.yml (GPU)
+```yaml
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: zentrax-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+```
+
+### docker/docker-compose.cpu.yml (CPU)
+```yaml
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: zentrax-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # No GPU section - runs on CPU
+```
+
+---
+
+## 📦 Using Different Models
+
+```powershell
+# Pull additional models
+docker exec zentrax-ollama ollama pull llama3.2
 docker exec zentrax-ollama ollama pull mistral
 docker exec zentrax-ollama ollama pull codellama
 
-# List available models
+# List installed models
 docker exec zentrax-ollama ollama list
+
+# Remove a model
+docker exec zentrax-ollama ollama rm llama3.2
 ```
 
-## Troubleshooting
+### Configure Zentrax to Use Different Model
+Edit `config/zentrax_config.json`:
+```json
+{
+  "llm": {
+    "model": "llama3.2"
+  }
+}
+```
 
-### Container won't start
-```bash
+---
+
+## 🔗 Connecting to Zentrax
+
+Zentrax automatically connects to Ollama at `http://localhost:11434`. No configuration needed!
+
+### Remote Ollama Server
+If Ollama is on a different host, edit `config/zentrax_config.json`:
+```json
+{
+  "llm": {
+    "ollama_url": "http://your-host:11434"
+  }
+}
+```
+
+---
+
+## 🛠️ Troubleshooting
+
+### Container Won't Start
+```powershell
 # Check Docker status
 docker ps -a
 
-# View logs
-docker-compose logs ollama
+# View detailed logs
+docker logs zentrax-ollama --tail 50
+
+# Restart container
+docker restart zentrax-ollama
 ```
 
-### Model not responding
-```bash
-# Restart container
-docker-compose restart ollama
+### GPU Not Detected
+```powershell
+# Check NVIDIA driver
+nvidia-smi
 
-# Re-pull model
+# Check Docker GPU access
+docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
+```
+
+### Model Not Responding
+```powershell
+# Restart and re-pull model
+docker restart zentrax-ollama
+Start-Sleep -Seconds 10
 docker exec zentrax-ollama ollama pull smollm2
 ```
 
-### Port conflict
-If port 11434 is in use, edit `docker-compose.yml`:
-```yaml
-ports:
-  - "11435:11434"  # Use port 11435 instead
+### Port Already in Use
+```powershell
+# Find what's using port 11434
+netstat -ano | findstr :11434
+
+# Kill the process or change port in docker-compose.yml
 ```
 
-## Resource Usage
-
-| Resource | Approximate Usage |
-|----------|-------------------|
-| Disk | ~2-5 GB (model + container) |
-| RAM | ~2-4 GB when running |
-| GPU VRAM | ~2-4 GB (if GPU enabled) |
-
-## Persistent Data
-
-Model data is stored in the `ollama_data` Docker volume. To reset:
-```bash
-docker-compose down -v  # Removes volume too
+### Clean Reset
+```powershell
+# Remove everything and start fresh
+docker-compose -f docker/docker-compose.yml down -v
+docker-compose -f docker/docker-compose.yml up -d
 ```
+
+---
+
+## 📊 Resource Usage
+
+| Model | RAM Usage | GPU VRAM | Speed |
+|-------|-----------|----------|-------|
+| smollm2 | ~2GB | ~2GB | Fast |
+| llama3.2 | ~4GB | ~4GB | Medium |
+| mistral | ~8GB | ~6GB | Slower |
+
+---
+
+## 🚀 Next Steps
+
+After Docker is running:
+```powershell
+# Run Zentrax
+python run.py
+```
+
+Zentrax will automatically connect to the containerized Ollama!
