@@ -2,6 +2,10 @@
 title Zentrax Web UI Launcher
 color 0B
 
+REM Get project root (parent of scripts folder)
+cd /d "%~dp0\.."
+set "PROJECT_ROOT=%cd%"
+
 echo ========================================
 echo       ZENTRAX WEB UI LAUNCHER
 echo ========================================
@@ -27,8 +31,8 @@ if %errorlevel% neq 0 (
 
 echo.
 echo [2/3] Starting WebSocket server...
-if exist "websocket_server.py" (
-    start "Zentrax WebSocket Server" cmd /k "python websocket_server.py"
+if exist "%PROJECT_ROOT%\src\core\websocket_server.py" (
+    start "Zentrax WebSocket Server" cmd /k "cd /d "%PROJECT_ROOT%" && python src\core\websocket_server.py"
     echo + WebSocket server started in new window
     timeout /t 2 /nobreak >nul
 ) else (
@@ -39,8 +43,8 @@ if exist "websocket_server.py" (
 
 echo.
 echo [3/3] Opening web interface...
-if exist "frontend\index.html" (
-    start "" "frontend\index.html"
+if exist "%PROJECT_ROOT%\frontend\index.html" (
+    start "" "%PROJECT_ROOT%\frontend\index.html"
     echo + Web interface opened in browser
 ) else (
     echo X frontend\index.html not found!

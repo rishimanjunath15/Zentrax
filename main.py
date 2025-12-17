@@ -22,7 +22,7 @@ except Exception:
 # --- Safe imports / fallbacks for missing modules ---
 try:
 	# try to import real implementations if present
-	from hill_climb_game import HillClimbGame
+	from src.core.hill_climb_game import HillClimbGame
 except Exception:
 	# Minimal stub so main program can run without the actual game module
 	class HillClimbGame:
@@ -37,7 +37,7 @@ except Exception:
 			print(f"[HillClimbGame stub] Gesture received: {gesture}")
 
 try:
-	from whisper_handler import HybridRecognizer
+	from src.assistant.whisper_handler import HybridRecognizer
 except Exception:
 	# Fallback HybridRecognizer using speech_recognition's Google API
 	class HybridRecognizer:
@@ -53,13 +53,40 @@ except Exception:
 			except Exception:
 				return ""
 
+# --- Windows Automation Integration ---
+try:
+    from src.commands.windows_command_generator import WindowsCommandGenerator
+    from src.commands.command_executor import CommandExecutor
+    WINDOWS_AUTOMATION_AVAILABLE = True
+except Exception as e:
+    print(f"[Warning] Windows automation not available: {e}")
+    WINDOWS_AUTOMATION_AVAILABLE = False
+
+# --- FRIDAY AI Assistant ---
+try:
+    from src.assistant.friday_assistant import FridayAssistant, SystemMonitor
+    FRIDAY_AVAILABLE = True
+except Exception as e:
+    print(f"[Warning] FRIDAY assistant not available: {e}")
+    FRIDAY_AVAILABLE = False
+
 
 class VoiceGestureControl:
-    def __init__(self, use_whisper=True, whisper_model="base"):
+    def __init__(self, use_whisper=True, whisper_model="base", headless=False):
         # ---------------- Initialization ----------------
+        # Headless mode: no camera window (works when minimized)
+        self.headless = headless
+        
         # Initialize Whisper-based hybrid recognizer
         self.hybrid_recognizer = HybridRecognizer(use_whisper=use_whisper, whisper_model=whisper_model)
         self.recognizer = self.hybrid_recognizer.recognizer
+        
+        # Audio configuration for better noise filtering
+        self.recognizer.energy_threshold = 1500  # Higher = less sensitive to background noise
+        self.recognizer.dynamic_energy_threshold = True  # Auto-adjust to ambient noise
+        self.recognizer.pause_threshold = 1.0  # Seconds of silence before phrase is complete
+        self.recognizer.phrase_threshold = 0.3  # Minimum seconds of speaking to consider
+        self.recognizer.non_speaking_duration = 0.5  # Seconds of non-speaking audio to keep
 
         # detect microphone (may return None if PyAudio missing)
         self.mic_index = self.get_working_microphone()
@@ -80,11 +107,31 @@ class VoiceGestureControl:
         self.game = None
 
         # Add configurable wake phrase (change here if you want a different trigger)
-        self.wake_phrase = "hello"
+        self.wake_phrase = "zentrax"
+        self.wake_phrase_variants = ["zentrax", "hey zentrax", "hi zentrax", "ok zentrax", 
+                                      "hello", "hey there"]
 
         # audio queue for non-blocking transcription
         self.audio_queue = Queue()
         self.audio_worker = threading.Thread(target=self._audio_worker, daemon=True)
+
+        # --- Zentrax AI Assistant (FRIDAY-like) ---
+        if FRIDAY_AVAILABLE:
+            self.assistant = FridayAssistant(voice_enabled=True, voice_speed=175, name="Zentrax")
+            self.system_monitor = SystemMonitor()
+            print("🤖 Zentrax AI Assistant activated!")
+        else:
+            self.assistant = None
+            self.system_monitor = None
+
+        # --- Windows Automation (SmolLM2/Pattern Matching) ---
+        if WINDOWS_AUTOMATION_AVAILABLE:
+            self.win_command_generator = WindowsCommandGenerator(use_fallback=True)
+            self.win_executor = CommandExecutor()
+            print("✅ Windows Automation enabled (voice commands → system actions)")
+        else:
+            self.win_command_generator = None
+            self.win_executor = None
 
         # Voice commands
         self.voice_commands = {
@@ -182,19 +229,22 @@ class VoiceGestureControl:
 
         # If PyAudio truly absent we still try default path and fallback recorder.
         # Pre-adjust ambient noise once (use default mic when mic_index is None)
+        print("🎤 Calibrating microphone for ambient noise... Please wait.")
         try:
             if self.mic_index is None:
                 try:
                     with sr.Microphone() as source:
-                        self.recognizer.adjust_for_ambient_noise(source, duration=0.8)
+                        self.recognizer.adjust_for_ambient_noise(source, duration=2.0)
+                        print(f"✅ Calibration complete. Energy threshold: {self.recognizer.energy_threshold:.0f}")
                 except Exception:
                     # If sr.Microphone isn't usable (PyAudio missing), skip ambient adjust and continue:
                     print("sr.Microphone unavailable; will try alternative recorder if needed.")
             else:
                 with sr.Microphone(device_index=self.mic_index) as source:
-                    self.recognizer.adjust_for_ambient_noise(source, duration=0.8)
+                    self.recognizer.adjust_for_ambient_noise(source, duration=2.0)
+                    print(f"✅ Calibration complete. Energy threshold: {self.recognizer.energy_threshold:.0f}")
         except Exception:
-            pass
+            print("⚠️ Could not calibrate microphone. Using default settings.")
 
         self.audio_worker.start()
 
@@ -212,14 +262,19 @@ class VoiceGestureControl:
                 except Exception as e:
                     # sr.Microphone failed (likely PyAudio missing). Try sounddevice fallback.
                     if SOUNDDEVICE_AVAILABLE:
-                        print("sr.Microphone unavailable; using sounddevice fallback to capture audio.")
-                        audio = self.record_with_sounddevice(duration=5, fs=16000)
+                        if not hasattr(self, '_sounddevice_warning_shown'):
+                            print("⚠️ sr.Microphone unavailable; using sounddevice fallback.")
+                            print("💡 Tip: Install PyAudio for better audio handling:")
+                            print("   pip install pipwin && pipwin install pyaudio")
+                            self._sounddevice_warning_shown = True
+                        audio = self.record_with_sounddevice(duration=4, fs=16000)
                         if audio is None:
-                            print("Fallback recorder failed; waiting before retrying.")
                             time.sleep(1)
                             continue
                     else:
-                        print(f"Voice input unavailable: {e}")
+                        if not hasattr(self, '_audio_error_shown'):
+                            print(f"Voice input unavailable: {e}")
+                            self._audio_error_shown = True
                         # wait and retry instead of exiting the loop
                         time.sleep(1)
                         continue
@@ -236,20 +291,30 @@ class VoiceGestureControl:
     def _handle_recognized_text(self, text):
         print(f"Recognized: {text}")
         if not self.is_awake:
-            # use configurable wake phrase
-            if self.wake_phrase in text:
+            # Check for any wake phrase variant
+            wake_detected = any(wake in text for wake in self.wake_phrase_variants)
+            if wake_detected:
                 self.is_awake = True
-                print("Zentrax is awake!")
+                if self.assistant:
+                    self.assistant.greet()
+                else:
+                    print("FRIDAY is awake and ready!")
             return
 
-        if "go to sleep" in text or "deactivate" in text:
+        if "go to sleep" in text or "deactivate" in text or "goodbye" in text:
             self.is_awake = False
+            if self.assistant:
+                self.assistant.farewell()
             return
         if "switch to gesture mode" in text:
             self.active_mode = "gesture"
+            if self.assistant:
+                self.assistant.speak("Switching to gesture mode.")
             return
         if "switch to voice mode" in text:
             self.active_mode = "voice"
+            if self.assistant:
+                self.assistant.speak("Switching to voice mode.")
             return
 
         if self.active_mode == "voice":
@@ -260,10 +325,102 @@ class VoiceGestureControl:
             elif text.startswith("send whatsapp message to"):
                 self.handle_whatsapp(text)
                 return
+            
+            # Check predefined voice commands first
+            command_found = False
             for command, func in self.voice_commands.items():
                 if command in text:
+                    if self.assistant:
+                        self.assistant.acknowledge()
                     func()
+                    command_found = True
                     break
+            
+            # If no predefined command matched, try Windows Automation
+            if not command_found and self.win_command_generator and self.win_executor:
+                self._execute_windows_command(text)
+
+    def _execute_windows_command(self, text):
+        """Use Windows automation to execute natural language commands."""
+        try:
+            # Generate command from natural language
+            command = self.win_command_generator.generate_command(text)
+            
+            if command:
+                action = command.get("action", "")
+                
+                # Handle special FRIDAY personality commands
+                if action == "help" and self.assistant:
+                    self.assistant.help_message()
+                    return
+                elif action == "thanks" and self.assistant:
+                    self.assistant.respond_to_thanks()
+                    return
+                elif action == "introduce" and self.assistant:
+                    self.assistant.introduce()
+                    return
+                elif action == "system_info" and self.assistant and self.system_monitor:
+                    # Get and speak system info
+                    self._handle_system_info(command)
+                    return
+                
+                # Acknowledge before executing
+                if self.assistant:
+                    self.assistant.acknowledge()
+                
+                # Execute the command
+                success, message = self.win_executor.execute(command)
+                
+                if success:
+                    print(f"✅ {message}")
+                    if self.assistant:
+                        self.assistant.confirm()
+                else:
+                    print(f"❌ {message}")
+                    if self.assistant:
+                        self.assistant.report_error(message)
+            else:
+                print(f"🤷 Could not understand: {text}")
+                if self.assistant:
+                    self.assistant.not_understood()
+        except Exception as e:
+            print(f"❌ Windows automation error: {e}")
+            if self.assistant:
+                self.assistant.report_error(str(e))
+    
+    def _handle_system_info(self, command):
+        """Handle system info requests with FRIDAY voice."""
+        extra = command.get("extra", {})
+        info_type = extra.get("type", "general") if isinstance(extra, dict) else command.get("target", "general")
+        
+        if info_type in ["battery", "general"]:
+            battery = self.system_monitor.get_battery_info()
+            if battery["percent"]:
+                self.assistant.report_status("battery", f"{battery['percent']} percent, {battery['status']}")
+            else:
+                self.assistant.speak("I couldn't get battery information. You might be on a desktop computer.")
+        
+        if info_type in ["datetime", "time", "general"]:
+            now = datetime.now()
+            self.assistant.report_status("time", now.strftime("%I:%M %p"))
+            if info_type != "time":
+                self.assistant.report_status("date", now.strftime("%B %d, %Y"))
+        
+        if info_type in ["cpu", "all"]:
+            cpu = self.system_monitor.get_cpu_usage()
+            self.assistant.report_status("cpu", f"{cpu} percent")
+        
+        if info_type in ["memory", "ram", "all"]:
+            mem = self.system_monitor.get_memory_info()
+            self.assistant.report_status("memory", f"{mem['percent_used']} percent used, {mem['free_gb']} GB free")
+        
+        if info_type in ["disk", "storage", "all"]:
+            disk = self.system_monitor.get_disk_info()
+            self.assistant.report_status("disk", f"{disk['percent_used']} percent used, {disk['free_gb']} GB free")
+        
+        if info_type in ["network", "wifi", "all"]:
+            network = self.system_monitor.get_network_status()
+            self.assistant.report_status("wifi", f"{network['status']}, connected to {network['wifi_name']}")
 
     # ---------------- WhatsApp ----------------
     def handle_whatsapp(self, text):
@@ -299,19 +456,26 @@ class VoiceGestureControl:
 
                 if self.is_awake and self.active_mode == "gesture" and results.multi_hand_landmarks:
                     for hand_landmarks in results.multi_hand_landmarks:
-                        self.mp_drawing.draw_landmarks(image, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
+                        if not self.headless:
+                            self.mp_drawing.draw_landmarks(image, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
                         gesture = self.recognize_gesture(hand_landmarks)
                         if gesture and time.time() > self.gesture_cooldown:
                             self.execute_gesture(gesture)
                             self.gesture_cooldown = time.time() + 0.2  # faster for real-time
 
-                cv2.imshow('Hand Tracking', image)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    self.running = False
-                    break
+                # Only show window if not in headless mode
+                if not self.headless:
+                    cv2.imshow('Hand Tracking', image)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        self.running = False
+                        break
+                else:
+                    # In headless mode, just sleep briefly to avoid 100% CPU
+                    time.sleep(0.03)
         finally:
             cap.release()
-            cv2.destroyAllWindows()
+            if not self.headless:
+                cv2.destroyAllWindows()
 
     # ---------------- Gesture Recognition ----------------
     def recognize_gesture(self, landmarks):
@@ -360,14 +524,28 @@ class VoiceGestureControl:
     def exit_program(self): self.running = False
     def play_music(self, name): pywhatkit.playonyt(name)
 
-    def record_with_sounddevice(self, duration=5, fs=16000):
-        """Fallback recorder using sounddevice -> returns sr.AudioData or None."""
+    def record_with_sounddevice(self, duration=4, fs=16000):
+        """Fallback recorder using sounddevice with voice activity detection."""
         if not SOUNDDEVICE_AVAILABLE:
             return None
         try:
             # record mono int16
             audio = _sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='int16')
             _sd.wait()
+            
+            # Simple voice activity detection - check if audio has enough energy
+            audio_flat = audio.flatten()
+            energy = np.abs(audio_flat).mean()
+            
+            # If energy is too low (silence), skip this recording
+            if energy < 300:  # Adjust threshold as needed
+                return None
+            
+            # If energy is very high but uniform (likely continuous noise), skip
+            energy_std = np.abs(audio_flat).std()
+            if energy_std < 200 and energy > 1000:  # Constant loud noise
+                return None
+            
             audio_bytes = audio.tobytes()
             return sr.AudioData(audio_bytes, fs, 2)
         except Exception as e:
@@ -376,7 +554,10 @@ class VoiceGestureControl:
 
     # ---------------- Main Run ----------------
     def run(self):
-        print("Starting Voice & Gesture Control...")
+        mode_str = "HEADLESS (no camera window)" if self.headless else "NORMAL (with camera window)"
+        print(f"Starting Voice & Gesture Control... [{mode_str}]")
+        if self.headless:
+            print("💡 Tip: Press Ctrl+C in terminal to exit")
         voice_thread = threading.Thread(target=self.listen_for_commands, daemon=True)
         voice_thread.start()
         self.process_gestures()
@@ -386,5 +567,16 @@ class VoiceGestureControl:
 
 
 if __name__ == "__main__":
-    controller = VoiceGestureControl()
+    import argparse
+    parser = argparse.ArgumentParser(description="Zentrax AI Voice & Gesture Control")
+    parser.add_argument("--headless", action="store_true", 
+                        help="Run without camera window (works when minimized)")
+    parser.add_argument("--no-whisper", action="store_true",
+                        help="Disable Whisper, use Google Speech Recognition only")
+    args = parser.parse_args()
+    
+    controller = VoiceGestureControl(
+        use_whisper=not args.no_whisper,
+        headless=args.headless
+    )
     controller.run()

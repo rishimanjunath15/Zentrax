@@ -2,6 +2,10 @@
 openai-whisper
 SpeechRecognition
 pyaudio
+sounddevice  # Fallback audio capture
+
+# Zentrax Voice Assistant
+pyttsx3
 
 # Deep Learning
 torch
@@ -17,7 +21,13 @@ pywhatkit
 
 # Utilities
 numpy
+requests
+psutil  # System monitoring (CPU, RAM, Battery)
+colorama  # Colored terminal output
 
 # Web UI
 websockets
 pygame
+
+# Windows Automation
+pywin32  # Advanced window management
