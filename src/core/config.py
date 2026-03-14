@@ -56,7 +56,7 @@ class ZentraxConfig:
         "llm": {
             "use_ollama": True,
             "ollama_url": "http://localhost:11434",
-            "model": "smollm2",
+            "model": "smollm2:135m",
             "timeout": 5,
         },
         

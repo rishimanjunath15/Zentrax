@@ -29,6 +29,15 @@ from functools import partial
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
+# Import asyncio and websockets for WebSocket server
+import asyncio
+try:
+    import websockets
+    WEBSOCKETS_AVAILABLE = True
+except ImportError:
+    WEBSOCKETS_AVAILABLE = False
+    print("⚠️  websockets not installed. WebSocket server disabled. Install with: pip install websockets")
+
 # Colors for terminal output
 class Colors:
     HEADER = '\033[95m'
@@ -110,12 +119,90 @@ class FrontendServer(threading.Thread):
             log("Frontend server stopped", "INFO")
 
 
+class WebSocketServer(threading.Thread):
+    """WebSocket Server for real-time communication with frontend"""
+    
+    def __init__(self, port=8765):
+        super().__init__(daemon=True)
+        self.port = port
+        self.running = False
+        self.clients = set()
+        self.loop = None
+        
+    def run(self):
+        """Start the WebSocket server in its own event loop"""
+        if not WEBSOCKETS_AVAILABLE:
+            log("WebSocket server not available (websockets not installed)", "WARNING")
+            return
+            
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        
+        try:
+            self.running = True
+            self.loop.run_until_complete(self.start_server())
+        except Exception as e:
+            log(f"WebSocket server error: {e}", "ERROR")
+        finally:
+            self.loop.close()
+            
+    async def start_server(self):
+        """Start the async WebSocket server"""
+        try:
+            async with websockets.serve(self.handle_client, 'localhost', self.port):
+                log(f"WebSocket server started at ws://localhost:{self.port}", "SUCCESS")
+                while self.running:
+                    await asyncio.sleep(1)
+        except OSError as e:
+            if "address already in use" in str(e).lower() or e.errno == 10048:
+                log(f"WebSocket port {self.port} already in use", "WARNING")
+            else:
+                raise
+                
+    async def handle_client(self, websocket):
+        """Handle incoming WebSocket connections"""
+        self.clients.add(websocket)
+        log(f"WebSocket client connected. Total: {len(self.clients)}", "INFO")
+        
+        try:
+            # Send initial status
+            await websocket.send('{"type": "status", "status": "connected", "message": "Zentrax backend connected"}')
+            
+            async for message in websocket:
+                try:
+                    import json
+                    data = json.loads(message)
+                    log(f"WebSocket received: {data.get('command', 'unknown')}", "INFO")
+                    
+                    # Echo back acknowledgment
+                    response = {
+                        "type": "response",
+                        "command": data.get("command"),
+                        "status": "received",
+                        "message": f"Command '{data.get('command')}' received"
+                    }
+                    await websocket.send(json.dumps(response))
+                except Exception as e:
+                    await websocket.send(f'{{"type": "error", "message": "{str(e)}"}}')
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        finally:
+            self.clients.discard(websocket)
+            log(f"WebSocket client disconnected. Total: {len(self.clients)}", "INFO")
+            
+    def stop(self):
+        """Stop the WebSocket server"""
+        self.running = False
+        log("WebSocket server stopped", "INFO")
+
+
 class ZentraxLauncher:
     """Main launcher for all Zentrax components"""
     
     def __init__(self, args):
         self.args = args
         self.frontend_server = None
+        self.websocket_server = None
         self.main_process = None
         self.running = False
         
@@ -124,6 +211,13 @@ class ZentraxLauncher:
         log("Starting frontend server...", "INFO")
         self.frontend_server = FrontendServer(port=self.args.port)
         self.frontend_server.start()
+        time.sleep(1)  # Give server time to start
+        
+    def start_websocket(self):
+        """Start the WebSocket server"""
+        log("Starting WebSocket server...", "INFO")
+        self.websocket_server = WebSocketServer(port=self.args.ws_port)
+        self.websocket_server.start()
         time.sleep(1)  # Give server time to start
         
     def start_backend(self):
@@ -160,11 +254,18 @@ class ZentraxLauncher:
             spec = importlib.util.spec_from_file_location("main_module", main_script)
             main_module = importlib.util.module_from_spec(spec)
             
+            # Load the module
+            spec.loader.exec_module(main_module)
+            
             # Restore argv
             sys.argv = original_argv
             
-            # Load and run
-            spec.loader.exec_module(main_module)
+            # Create and run the VoiceGestureControl
+            controller = main_module.VoiceGestureControl(
+                use_whisper=True,
+                headless=self.args.headless
+            )
+            controller.run()
             
             return True
             
@@ -194,6 +295,9 @@ class ZentraxLauncher:
         # Start frontend server
         self.start_frontend()
         
+        # Start WebSocket server
+        self.start_websocket()
+        
         # Open browser
         if not self.args.no_browser:
             threading.Thread(target=self.open_browser, daemon=True).start()
@@ -219,6 +323,9 @@ class ZentraxLauncher:
         
         if self.frontend_server:
             self.frontend_server.stop()
+            
+        if self.websocket_server:
+            self.websocket_server.stop()
             
         if self.main_process:
             self.main_process.terminate()

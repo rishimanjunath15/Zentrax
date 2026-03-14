@@ -10,6 +10,14 @@ import threading
 import sys
 import os
 
+# Optional psutil for system monitoring
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    psutil = None
+    PSUTIL_AVAILABLE = False
+
 # Add project root to path to import main
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
@@ -35,11 +43,25 @@ class ZentraxWebSocketServer:
         self.clients.add(websocket)
         print(f"Client connected. Total clients: {len(self.clients)}")
         
+        # Determine initial status safely
+        is_awake = False
+        mode = None
+        if self.controller:
+            is_awake = getattr(self.controller, 'is_awake', False)
+            mode = getattr(self.controller, 'active_mode', None)
+        
         # Send initial status
         await self.send_to_client(websocket, {
             'type': 'status',
-            'status': 'sleeping' if not (self.controller and self.controller.is_awake) else 'awake',
-            'mode': self.controller.active_mode if self.controller else None
+            'status': 'awake' if is_awake else 'sleeping',
+            'mode': mode
+        })
+        
+        # Send welcome message
+        await self.send_to_client(websocket, {
+            'type': 'log',
+            'message': 'Connected to Zentrax WebSocket server',
+            'level': 'success'
         })
         
     async def unregister(self, websocket):
@@ -93,48 +115,84 @@ class ZentraxWebSocketServer:
         
         print(f"Received command: {command}, params: {params}")
         
+        # Send acknowledgment for all commands
+        await self.broadcast({
+            'type': 'response',
+            'command': command,
+            'status': 'received'
+        })
+        
         if command == 'wake':
-            if not self.controller or not self.controller.running:
-                # Start the controller
-                self.start_controller()
-                await self.broadcast({
-                    'type': 'log',
-                    'message': 'Starting Zentrax...',
-                    'level': 'info'
-                })
+            await self.broadcast({
+                'type': 'log',
+                'message': 'Starting Zentrax...',
+                'level': 'info'
+            })
+            
+            # Try to start the controller if not running
+            if not self.controller or not getattr(self.controller, 'running', False):
+                started = self.start_controller()
+                if not started and VoiceGestureControl is None:
+                    # Running in standalone mode without backend
+                    await self.broadcast({
+                        'type': 'log',
+                        'message': 'Running in standalone UI mode (backend not available)',
+                        'level': 'warning'
+                    })
             
             if self.controller:
                 self.controller.is_awake = True
                 self.controller.active_mode = 'voice'
-                await self.broadcast({
-                    'type': 'status',
-                    'status': 'awake',
-                    'mode': 'voice'
-                })
-                await self.broadcast({
-                    'type': 'log',
-                    'message': 'Zentrax is now awake in voice mode',
-                    'level': 'success'
-                })
+            
+            # Always send awake status to UI
+            await self.broadcast({
+                'type': 'status',
+                'status': 'awake',
+                'mode': 'voice'
+            })
+            await self.broadcast({
+                'type': 'log',
+                'message': 'Zentrax is now awake in voice mode',
+                'level': 'success'
+            })
                 
         elif command == 'sleep':
             if self.controller:
                 self.controller.is_awake = False
-                await self.broadcast({
-                    'type': 'status',
-                    'status': 'sleeping',
-                    'mode': None
-                })
-                await self.broadcast({
-                    'type': 'log',
-                    'message': 'Zentrax is going to sleep',
-                    'level': 'info'
-                })
+            await self.broadcast({
+                'type': 'status',
+                'status': 'sleeping',
+                'mode': None
+            })
+            await self.broadcast({
+                'type': 'log',
+                'message': 'Zentrax is going to sleep',
+                'level': 'info'
+            })
                 
         elif command == 'switch_mode':
             mode = params.get('mode')
-            if self.controller and self.controller.is_awake:
-                self.controller.active_mode = mode
+            if self.controller:
+                if getattr(self.controller, 'is_awake', False):
+                    self.controller.active_mode = mode
+                    await self.broadcast({
+                        'type': 'status',
+                        'status': 'awake',
+                        'mode': mode
+                    })
+                    await self.broadcast({
+                        'type': 'log',
+                        'message': f'Switched to {mode} mode',
+                        'level': 'success'
+                    })
+                else:
+                    await self.broadcast({
+                        'type': 'log',
+                        'message': 'Zentrax must be awake to switch modes',
+                        'level': 'warning'
+                    })
+            else:
+                # UI-only mode - still allow mode switching for display
                 await self.broadcast({
                     'type': 'status',
                     'status': 'awake',
@@ -142,18 +200,12 @@ class ZentraxWebSocketServer:
                 })
                 await self.broadcast({
                     'type': 'log',
-                    'message': f'Switched to {mode} mode',
-                    'level': 'success'
-                })
-            else:
-                await self.broadcast({
-                    'type': 'log',
-                    'message': 'Zentrax must be awake to switch modes',
-                    'level': 'warning'
+                    'message': f'Switched to {mode} mode (UI only)',
+                    'level': 'info'
                 })
                 
         elif command == 'start_game':
-            if self.controller and self.controller.is_awake:
+            if self.controller and getattr(self.controller, 'is_awake', False):
                 try:
                     self.controller.start_hill_climb()
                     await self.broadcast({
@@ -177,56 +229,119 @@ class ZentraxWebSocketServer:
         elif command == 'stop':
             if self.controller:
                 self.controller.running = False
-                await self.broadcast({
-                    'type': 'log',
-                    'message': 'Zentrax stopped',
-                    'level': 'info'
-                })
+                self.controller.is_awake = False
+            await self.broadcast({
+                'type': 'status',
+                'status': 'sleeping',
+                'mode': None
+            })
+            await self.broadcast({
+                'type': 'log',
+                'message': 'Zentrax stopped',
+                'level': 'info'
+            })
         
         elif command == 'execute':
             # Execute a voice command from UI
             cmd = params.get('command', '')
-            if cmd and self.controller:
+            if cmd:
                 await self.broadcast({
                     'type': 'log',
                     'message': f'Executing: {cmd}',
-                    'category': 'system'
+                    'level': 'info'
                 })
+                if self.controller and hasattr(self.controller, '_handle_recognized_text'):
+                    try:
+                        self.controller._handle_recognized_text(cmd.lower())
+                        await self.broadcast({
+                            'type': 'log',
+                            'message': f'Command executed: {cmd}',
+                            'level': 'success'
+                        })
+                    except Exception as e:
+                        await self.broadcast({
+                            'type': 'log',
+                            'message': f'Error executing command: {str(e)}',
+                            'level': 'error'
+                        })
+        
+        elif command == 'get_status':
+            # Return current status
+            is_awake = self.controller.is_awake if self.controller else False
+            mode = getattr(self.controller, 'active_mode', None) if self.controller else None
+            await self.broadcast({
+                'type': 'status',
+                'status': 'awake' if is_awake else 'sleeping',
+                'mode': mode
+            })
+        
+        else:
+            await self.broadcast({
+                'type': 'log',
+                'message': f'Unknown command: {command}',
+                'level': 'warning'
+            })
                 
     def start_controller(self):
         """Start the VoiceGestureControl in a separate thread"""
+        if VoiceGestureControl is None:
+            print("Warning: VoiceGestureControl not available, running in standalone mode")
+            return False
+            
         if not self.controller or not self.controller.running:
-            print("Starting VoiceGestureControl...")
-            self.controller = VoiceGestureControl(use_whisper=True, whisper_model="base")
-            self.controller_thread = threading.Thread(
-                target=self.controller.run,
-                daemon=True
-            )
-            self.controller_thread.start()
-            print("VoiceGestureControl started")
+            try:
+                print("Starting VoiceGestureControl...")
+                self.controller = VoiceGestureControl(use_whisper=True, whisper_model="base")
+                self.controller.is_awake = False
+                self.controller.running = True
+                self.controller_thread = threading.Thread(
+                    target=self.controller.run,
+                    daemon=True
+                )
+                self.controller_thread.start()
+                print("VoiceGestureControl started")
+                return True
+            except Exception as e:
+                print(f"Error starting VoiceGestureControl: {e}")
+                return False
+        return True
     
     async def send_system_info(self):
         """Send system info to all connected clients periodically."""
-        try:
-            import psutil
+        if not PSUTIL_AVAILABLE:
+            # Send default values when psutil is not available
+            await self.broadcast({
+                'type': 'system_info',
+                'battery': 100,
+                'cpu': 0,
+                'ram': 0,
+                'disk': 0
+            })
+            return
             
+        try:
             # Get system stats
             battery = psutil.sensors_battery()
             battery_percent = battery.percent if battery else 100
             
             cpu_percent = psutil.cpu_percent(interval=0.1)
             ram = psutil.virtual_memory()
-            disk = psutil.disk_usage('/')
+            
+            # Use C: drive on Windows, / on other systems
+            try:
+                disk = psutil.disk_usage('C:/' if sys.platform == 'win32' else '/')
+            except Exception:
+                disk = None
             
             await self.broadcast({
                 'type': 'system_info',
                 'battery': battery_percent,
                 'cpu': cpu_percent,
                 'ram': ram.percent,
-                'disk': disk.percent
+                'disk': disk.percent if disk else 0
             })
-        except Exception:
-            pass  # psutil not available
+        except Exception as e:
+            print(f"Error getting system info: {e}")
     
     async def system_info_loop(self):
         """Background task to send system info every 5 seconds."""
