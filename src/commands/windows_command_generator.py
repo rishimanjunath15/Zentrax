@@ -455,7 +455,7 @@ class WindowsCommandGenerator:
     """
     
     OLLAMA_URL = "http://localhost:11434/api/generate"
-    MODEL_NAME = "smollm2"  # SmolLM2 model in Ollama
+    MODEL_NAME = "smollm2:135m"  # SmolLM2 model in Ollama
     
     # System prompt for the LLM
     SYSTEM_PROMPT = """You are the command-generation brain for a Windows-automation system.

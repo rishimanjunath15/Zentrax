@@ -48,6 +48,15 @@ recordings/
 # Whisper models (large files)
 *.pt
 
+# Training/model artifacts (too large for normal Git)
+models/zentrax-merged/
+models/zentrax-smollm2/checkpoint-*/
+models/zentrax-smollm2/final/
+data/zentrax_train.jsonl
+
+# Python caches inside source
+src/**/__pycache__/
+
 # Temporary files
 *.tmp
 *.temp
